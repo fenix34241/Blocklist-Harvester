@@ -1,0 +1,7 @@
+{
+  "name": "Pi-hole Blocklist Harvester",
+  "description": "Sistema de recolección de dominios para blocklists en formato Pi-hole y hosts a partir de búsquedas web inteligentes, extracción, deduplicación y validación RFC 1035.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
