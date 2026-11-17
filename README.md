@@ -126,7 +126,7 @@ tracker-ejemplo.net,nxdomain,,no,no
 ### 1. Clonar el repositorio e instalar dependencias
 
 ```bash
-git clone <url-de-tu-repositorio>
+git clone https://github.com/fenix34241/Blocklist-Harvester.git
 cd blocklist-harvester
 npm install
 ```
