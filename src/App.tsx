@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import React, { useState, useMemo, useRef, useCallback } from 'react';
 import { Header } from './components/Header';
 import { SearchForm } from './components/SearchForm';
 import { SummaryCards } from './components/SummaryCards';
@@ -22,7 +22,7 @@ import {
   slugify,
   normalizeDomain
 } from './utils/domainExtractor';
-import { AlertCircle, Shield } from 'lucide-react';
+import { AlertCircle, Shield, Plus, GitCompareArrows, Search } from 'lucide-react';
 
 class HtmlResponseError extends Error {
   constructor(message: string) {
@@ -95,6 +95,7 @@ export default function App() {
     percentage: 0
   });
   const dnsAbortRef = useRef<AbortController | null>(null);
+  const harvestAbortRef = useRef<AbortController | null>(null);
 
   // Ref to always access latest domains inside async append harvests
   const domainsRef = useRef<DomainEntry[]>(domains);
@@ -127,15 +128,12 @@ export default function App() {
     setFormattedOutput(newOutput);
   }, [harvestData, timestamp]);
 
-  // Initial load: automatically perform an initial harvest for "juegos de navegador"
-  useEffect(() => {
-    handleHarvest({
-      termino_busqueda: 'juegos de navegador',
-      titulo_lista: 'Browser Games Blocklist',
-      descripcion: 'Blocklist de juegos web y plataformas de juegos casuales en navegador.',
-      max_resultados: 50
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  const handleCancelHarvest = useCallback(() => {
+    if (harvestAbortRef.current) {
+      harvestAbortRef.current.abort();
+      harvestAbortRef.current = null;
+    }
+    setIsLoading(false);
   }, []);
 
   const handleHarvest = async (params: {
@@ -144,26 +142,50 @@ export default function App() {
     descripcion: string;
     max_resultados: number;
   }, retryAttempt = 0) => {
+    if (harvestAbortRef.current) {
+      harvestAbortRef.current.abort();
+    }
+    const controller = new AbortController();
+    harvestAbortRef.current = controller;
+
     setIsLoading(true);
     setError(null);
 
     try {
       const response = await fetch('/api/harvest', {
         method: 'POST',
+        credentials: 'same-origin',
         headers: {
           'Content-Type': 'application/json',
           'Accept': 'application/json'
         },
         body: JSON.stringify(params),
+        signal: controller.signal
       });
 
-      // Retry once on transient gateway/startup HTML or 502/503/504
-      if (retryAttempt === 0 && (response.status === 502 || response.status === 503 || response.status === 504)) {
-        await new Promise(r => setTimeout(r, 900));
-        return handleHarvest(params, 1);
+      // Retry on transient gateway/startup 502/503/504
+      if (retryAttempt < 2 && (response.status === 502 || response.status === 503 || response.status === 504)) {
+        await new Promise(r => setTimeout(r, 900 * (retryAttempt + 1)));
+        if (controller.signal.aborted) return;
+        return handleHarvest(params, retryAttempt + 1);
       }
 
-      const data = await parseJsonResponse<HarvestResponse>(response, '/api/harvest');
+      let data: HarvestResponse;
+      try {
+        data = await parseJsonResponse<HarvestResponse>(response, '/api/harvest');
+      } catch (parseErr) {
+        // Retry if proxy/gateway temporarily returned an HTML splash/loading page (e.g. HTTP 200 during server restart)
+        if (parseErr instanceof HtmlResponseError && retryAttempt < 2) {
+          await new Promise(r => setTimeout(r, 1000 * (retryAttempt + 1)));
+          if (controller.signal.aborted) return;
+          return handleHarvest(params, retryAttempt + 1);
+        }
+        throw parseErr;
+      }
+
+      if (!data.domains || data.domains.length === 0) {
+        setError(`No se encontraron dominios orgánicos para "${params.termino_busqueda}". Prueba con términos más amplios o en inglés.`);
+      }
 
       if (appendMode && domainsRef.current.length > 0) {
         // Merge existing domains + new domains in O(N) using Map<string, DomainEntry>
@@ -238,10 +260,16 @@ export default function App() {
         setTimestamp(data.metadata.timestamp);
       }
     } catch (err: any) {
+      if (err?.name === 'AbortError') {
+        return;
+      }
       console.error('Harvest request failed:', err);
       setError(err?.message || 'Error al recolectar dominios.');
     } finally {
-      setIsLoading(false);
+      if (harvestAbortRef.current === controller) {
+        harvestAbortRef.current = null;
+        setIsLoading(false);
+      }
     }
   };
 
@@ -391,17 +419,35 @@ export default function App() {
         const batch = chunks[idx];
 
         try {
-          const res = await fetch('/api/dns-check', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Accept': 'application/json'
-            },
-            body: JSON.stringify({ domains: batch }),
-            signal: controller.signal
-          });
+          const fetchDnsBatch = async (attempt = 0): Promise<{ results?: Record<string, any> }> => {
+            const res = await fetch('/api/dns-check', {
+              method: 'POST',
+              credentials: 'same-origin',
+              headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+              },
+              body: JSON.stringify({ domains: batch }),
+              signal: controller.signal
+            });
+            if (attempt === 0 && (res.status === 502 || res.status === 503 || res.status === 504)) {
+              await new Promise(r => setTimeout(r, 900));
+              if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+              return fetchDnsBatch(1);
+            }
+            try {
+              return await parseJsonResponse<{ results?: Record<string, any> }>(res, '/api/dns-check');
+            } catch (err) {
+              if (err instanceof HtmlResponseError && attempt === 0) {
+                await new Promise(r => setTimeout(r, 900));
+                if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+                return fetchDnsBatch(1);
+              }
+              throw err;
+            }
+          };
 
-          const data = await parseJsonResponse<{ results?: Record<string, any> }>(res, '/api/dns-check');
+          const data = await fetchDnsBatch();
           const results = data.results || {};
 
           // Merge batch results via O(1) Map lookup
@@ -526,7 +572,7 @@ export default function App() {
     };
   }, [domains, executedQueries.length, harvestData]);
 
-  const currentTitle = harvestData?.metadata.titulo_lista || 'Browser Games Blocklist';
+  const currentTitle = harvestData?.metadata.titulo_lista || 'Custom Blocklist';
   const currentSlug = harvestData?.metadata.slug || `${slugify(currentTitle)}.txt`;
   const limitations = harvestData?.limitations || [
     'Esta lista es generada automáticamente a partir de resultados de búsqueda públicos; no reemplaza revisión manual antes de desplegar en producción.',
@@ -558,11 +604,45 @@ export default function App() {
         <SearchForm
           isLoading={isLoading}
           onHarvest={handleHarvest}
+          onCancelHarvest={handleCancelHarvest}
           executedQueries={executedQueries}
           appendMode={appendMode}
           onToggleAppendMode={setAppendMode}
           currentDomainCount={domains.length}
         />
+
+        {/* Empty state before first search or manual import */}
+        {domains.length === 0 && !isLoading && (
+          <div className="mt-6 bg-zinc-900/60 border border-dashed border-zinc-800 rounded-xl p-8 text-center">
+            <div className="w-11 h-11 rounded-xl bg-zinc-950 border border-zinc-800 flex items-center justify-center mx-auto mb-3 text-emerald-400">
+              <Search className="w-5 h-5" />
+            </div>
+            <h2 className="text-sm font-semibold text-zinc-200">
+              Listo para recolectar dominios
+            </h2>
+            <p className="text-xs text-zinc-400 max-w-lg mx-auto mt-1.5 leading-relaxed">
+              Escribe un término de búsqueda arriba o elige una plantilla rápida para comenzar. También puedes importar una lista existente en <code className="text-zinc-300">.txt</code> para filtrarla, validarla con RFC 1035 o inspeccionar su DNS.
+            </p>
+            <div className="mt-4 flex flex-wrap items-center justify-center gap-2.5">
+              <button
+                type="button"
+                onClick={() => setShowAddModal(true)}
+                className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium bg-zinc-950 hover:bg-zinc-800 text-zinc-200 border border-zinc-700/80 rounded-lg transition-colors"
+              >
+                <Plus className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Importar lista / añadir dominios</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowDiffModal(true)}
+                className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium bg-zinc-950 hover:bg-zinc-800 text-zinc-300 border border-zinc-800 rounded-lg transition-colors"
+              >
+                <GitCompareArrows className="w-3.5 h-3.5 text-indigo-400" />
+                <span>Cargar lista base (Diff)</span>
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Summary Metric Cards */}
         {domains.length > 0 && (

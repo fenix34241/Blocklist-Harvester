@@ -103,12 +103,12 @@ function generateQueryVariations(term: string): SearchQueryInfo[] {
     type: 'best_of'
   });
   queries.push({
-    query: `top ${translated} to play in browser`,
+    query: `top ${translated}`,
     language: 'en',
     type: 'top_list'
   });
   queries.push({
-    query: `${translated} online free`,
+    query: `${translated} online`,
     language: 'en',
     type: 'intent'
   });
@@ -189,35 +189,37 @@ app.post('/api/harvest', async (req: Request, res: Response) => {
     const domainToUrls = new Map<string, Set<string>>();
     const domainNotes = new Map<string, string>();
 
-    // 1. Run live real web search across query variations
-    const webSearchPromises = queryVariations.slice(0, 6).map(async (q) => {
-      const urls = await executeWebSearchQuery(q.query);
-      return urls;
-    });
+    // 1. Run live real web search across query variations (parallel, bounded by 4.5s timeout each)
+    const webSearchPromises = queryVariations.slice(0, 6).map(q => executeWebSearchQuery(q.query));
 
-    // 2. Run AI domain synthesis in parallel using available Gemini models
+    // 2. Run AI domain synthesis + Google Search grounding in parallel (bounded by 8.5s timeout)
     const aiPromise = harvestWithAI(aiClient, termino_busqueda, queryVariations);
 
-    const [searchUrlBatches, aiResults] = await Promise.all([
-      Promise.all(webSearchPromises),
+    const [searchUrlSettled, aiResults] = await Promise.all([
+      Promise.allSettled(webSearchPromises),
       aiPromise
     ]);
 
     // Aggregate URLs from live web search
-    for (const batch of searchUrlBatches) {
-      for (const url of batch) {
-        rawCollectedUrls.push(url);
+    for (const result of searchUrlSettled) {
+      if (result.status === 'fulfilled') {
+        for (const url of result.value) {
+          rawCollectedUrls.push(url);
+        }
       }
     }
 
-    // Aggregate domains from AI synthesis
+    // Aggregate domains from AI synthesis & grounding
     for (const item of aiResults) {
       if (item.sourceUrl) rawCollectedUrls.push(item.sourceUrl);
       if (item.domain) {
-        rawCollectedUrls.push(`https://${item.domain}`);
+        const domainUrl = item.domain.startsWith('http://') || item.domain.startsWith('https://')
+          ? item.domain
+          : `https://${item.domain}`;
+        rawCollectedUrls.push(domainUrl);
         if (item.notes) {
           const norm = normalizeDomain(item.domain);
-          if (norm) domainNotes.set(norm, item.notes);
+          if (norm && !domainNotes.has(norm)) domainNotes.set(norm, item.notes);
         }
       }
     }
@@ -541,6 +543,10 @@ app.get('/api/download/:slug', (req: Request, res: Response) => {
   res.setHeader('Content-Type', 'text/plain; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="${slug}"`);
   return res.send(stored.formattedOutput);
+});
+
+app.get('/api/health', (_req: Request, res: Response) => {
+  return res.json({ ok: true, status: 'ready' });
 });
 
 // Ensure unmatched /api/* requests always return JSON, never HTML

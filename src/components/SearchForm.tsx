@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { Search, Sparkles, Sliders, ChevronDown, ChevronUp, Globe2, Layers, RefreshCw } from 'lucide-react';
+import React, { useState } from 'react';
+import { Search, Sparkles, Sliders, ChevronDown, ChevronUp, Globe2, Layers, RefreshCw, X } from 'lucide-react';
 import { SearchQueryInfo } from '../types';
 
 interface SearchFormProps {
@@ -10,6 +10,7 @@ interface SearchFormProps {
     descripcion: string;
     max_resultados: number;
   }) => void;
+  onCancelHarvest?: () => void;
   executedQueries?: SearchQueryInfo[];
   appendMode: boolean;
   onToggleAppendMode: (enabled: boolean) => void;
@@ -52,14 +53,15 @@ const PRESETS = [
 export const SearchForm: React.FC<SearchFormProps> = ({
   isLoading,
   onHarvest,
+  onCancelHarvest,
   executedQueries,
   appendMode,
   onToggleAppendMode,
   currentDomainCount
 }) => {
-  const [terminoBusqueda, setTerminoBusqueda] = useState('juegos de navegador');
-  const [tituloLista, setTituloLista] = useState('Browser Games Blocklist');
-  const [descripcion, setDescripcion] = useState('Blocklist de juegos web y plataformas de juegos casuales en navegador.');
+  const [terminoBusqueda, setTerminoBusqueda] = useState('');
+  const [tituloLista, setTituloLista] = useState('');
+  const [descripcion, setDescripcion] = useState('');
   const [maxResultados, setMaxResultados] = useState(50);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
@@ -220,27 +222,41 @@ export const SearchForm: React.FC<SearchFormProps> = ({
 
         {/* Action Button & Append / Merge Mode Switch */}
         <div className="pt-2 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <button
-            type="submit"
-            disabled={isLoading || !terminoBusqueda.trim()}
-            className="w-full sm:w-auto px-6 py-2.5 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold text-sm rounded-lg transition-all shadow-md shadow-emerald-950/40 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-          >
-            {isLoading ? (
-              <>
-                <RefreshCw className="w-4 h-4 animate-spin text-zinc-950" />
-                <span>Ejecutando búsquedas y extrayendo dominios...</span>
-              </>
-            ) : (
-              <>
-                <Sparkles className="w-4 h-4" />
-                <span>
-                  {appendMode && currentDomainCount > 0
-                    ? 'Recolectar y Anexar a la Lista'
-                    : 'Recolectar y Generar Blocklist'}
-                </span>
-              </>
+          <div className="flex flex-wrap items-center gap-2.5 w-full sm:w-auto">
+            <button
+              type="submit"
+              disabled={isLoading || !terminoBusqueda.trim()}
+              className="flex-1 sm:flex-none px-6 py-2.5 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold text-sm rounded-lg transition-all shadow-md shadow-emerald-950/40 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+            >
+              {isLoading ? (
+                <>
+                  <RefreshCw className="w-4 h-4 animate-spin text-zinc-950" />
+                  <span>Ejecutando búsquedas y extrayendo dominios...</span>
+                </>
+              ) : (
+                <>
+                  <Sparkles className="w-4 h-4" />
+                  <span>
+                    {appendMode && currentDomainCount > 0
+                      ? 'Recolectar y Anexar a la Lista'
+                      : 'Recolectar y Generar Blocklist'}
+                  </span>
+                </>
+              )}
+            </button>
+
+            {isLoading && onCancelHarvest && (
+              <button
+                type="button"
+                onClick={onCancelHarvest}
+                className="px-3.5 py-2.5 bg-zinc-950 hover:bg-rose-950/50 text-rose-300 border border-rose-800/70 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors"
+                title="Cancelar búsqueda en curso"
+              >
+                <X className="w-3.5 h-3.5" />
+                <span>Cancelar</span>
+              </button>
             )}
-          </button>
+          </div>
 
           {/* Append / Merge Mode Toggle Switch */}
           <label className="flex items-center gap-3 cursor-pointer select-none px-3.5 py-2 rounded-lg bg-zinc-950/70 border border-zinc-800 hover:border-zinc-700 transition-colors">

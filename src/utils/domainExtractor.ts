@@ -50,7 +50,7 @@ export const GENERIC_AGGREGATORS_AND_ENGINES = new Set<string>([
   'facebook.com', 'fb.com', 'instagram.com', 'twitter.com', 'x.com', 'tiktok.com', 'linkedin.com', 'pinterest.com',
   'reddit.com', 'quora.com', 'medium.com', 'discord.com', 'discord.gg', 't.me', 'telegram.org',
   'github.com', 'gitlab.com', 'stackoverflow.com', 'stackexchange.com',
-  'amazon.com', 'apple.com', 'microsoft.com', 'android.com',
+  'amazon.com', 'apple.com', 'microsoft.com', 'msn.com', 'android.com',
   'archive.org', 'web.archive.org',
   // Common URL shorteners
   'bit.ly', 'tinyurl.com', 't.co', 'goo.gl', 'ow.ly', 'is.gd', 'buff.ly', 'rebrand.ly', 'cutt.ly', 'linktr.ee',
@@ -225,9 +225,22 @@ export function isValidRfc1035(domain: string): { isValid: boolean; error?: stri
 export function isIgnoredAggregator(domain: string): boolean {
   if (GENERIC_AGGREGATORS_AND_ENGINES.has(domain)) return true;
 
-  // Check wildcard matches
-  if (domain.startsWith('google.') || domain.startsWith('bing.') || domain.startsWith('yahoo.') || domain.startsWith('wikipedia.')) {
+  // Check wildcard TLD prefixes (e.g. google.com.mx, bing.es, wikipedia.es)
+  if (
+    domain.startsWith('google.') ||
+    domain.startsWith('bing.') ||
+    domain.startsWith('yahoo.') ||
+    domain.startsWith('wikipedia.') ||
+    domain.startsWith('msn.')
+  ) {
     return true;
+  }
+
+  // Check subdomains of known search engines / aggregators (e.g. r.bing.com, es.wikipedia.org)
+  for (const agg of GENERIC_AGGREGATORS_AND_ENGINES) {
+    if (domain.endsWith('.' + agg)) {
+      return true;
+    }
   }
 
   return false;
