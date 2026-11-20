@@ -1,5 +1,6 @@
-import express, { Request, Response } from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import dotenv from 'dotenv';
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dns from 'dns/promises';
@@ -542,11 +543,34 @@ app.get('/api/download/:slug', (req: Request, res: Response) => {
   return res.send(stored.formattedOutput);
 });
 
+// Ensure unmatched /api/* requests always return JSON, never HTML
+app.use('/api', (req: Request, res: Response) => {
+  res.status(404).json({
+    error: `Ruta de API no encontrada: ${req.method} ${req.originalUrl}`
+  });
+});
+
+// Express JSON error handler for /api/* routes
+app.use((err: any, req: Request, res: Response, next: NextFunction) => {
+  if (req.path.startsWith('/api')) {
+    return res.status(err?.status || 500).json({
+      error: err?.message || 'Error interno del servidor API'
+    });
+  }
+  return next(err);
+});
+
 // Production or Vite development middleware
-if (process.env.NODE_ENV === 'production') {
-  app.use(express.static(path.join(__dirname, 'dist')));
+const distDir = path.join(__dirname, 'dist');
+const distIndex = path.join(distDir, 'index.html');
+
+if (process.env.NODE_ENV === 'production' && fs.existsSync(distIndex)) {
+  app.use(express.static(distDir));
   app.get('*', (req: Request, res: Response) => {
-    res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+    if (req.path.startsWith('/api')) {
+      return res.status(404).json({ error: 'API route not found' });
+    }
+    return res.sendFile(distIndex);
   });
 } else {
   // Dynamically import Vite in development
@@ -559,5 +583,5 @@ if (process.env.NODE_ENV === 'production') {
 }
 
 app.listen(port, '0.0.0.0', () => {
-  console.log(`Pi-hole Blocklist Harvester server running on http://0.0.0.0:${port}`);
+  console.log(`Blocklist Harvester server running on http://0.0.0.0:${port}`);
 });

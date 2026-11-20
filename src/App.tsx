@@ -24,6 +24,45 @@ import {
 } from './utils/domainExtractor';
 import { AlertCircle, Shield } from 'lucide-react';
 
+class HtmlResponseError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'HtmlResponseError';
+  }
+}
+
+async function parseJsonResponse<T>(res: Response, endpointLabel: string): Promise<T> {
+  const rawText = await res.text();
+  const trimmed = rawText.trim();
+  const contentType = res.headers.get('content-type') || '';
+
+  if (
+    trimmed.startsWith('<!doctype') ||
+    trimmed.startsWith('<!DOCTYPE') ||
+    trimmed.startsWith('<html') ||
+    (contentType.includes('text/html') && !contentType.includes('application/json'))
+  ) {
+    throw new HtmlResponseError(
+      `El endpoint ${endpointLabel} devolvió HTML en lugar de JSON (HTTP ${res.status}). Verifica que el servidor backend Express esté activo (npm run dev / npm start) y no solo el frontend estático.`
+    );
+  }
+
+  let parsed: any;
+  try {
+    parsed = JSON.parse(rawText);
+  } catch {
+    throw new Error(
+      `Respuesta no válida de ${endpointLabel} (HTTP ${res.status}): ${trimmed.slice(0, 120) || 'respuesta vacía'}`
+    );
+  }
+
+  if (!res.ok) {
+    throw new Error(parsed?.error || parsed?.details || `Error del servidor HTTP ${res.status}`);
+  }
+
+  return parsed as T;
+}
+
 export default function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -104,23 +143,27 @@ export default function App() {
     titulo_lista: string;
     descripcion: string;
     max_resultados: number;
-  }) => {
+  }, retryAttempt = 0) => {
     setIsLoading(true);
     setError(null);
 
     try {
       const response = await fetch('/api/harvest', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
         body: JSON.stringify(params),
       });
 
-      if (!response.ok) {
-        const errJson = await response.json().catch(() => ({}));
-        throw new Error(errJson.error || errJson.details || `Error del servidor HTTP ${response.status}`);
+      // Retry once on transient gateway/startup HTML or 502/503/504
+      if (retryAttempt === 0 && (response.status === 502 || response.status === 503 || response.status === 504)) {
+        await new Promise(r => setTimeout(r, 900));
+        return handleHarvest(params, 1);
       }
 
-      const data: HarvestResponse = await response.json();
+      const data = await parseJsonResponse<HarvestResponse>(response, '/api/harvest');
 
       if (appendMode && domainsRef.current.length > 0) {
         // Merge existing domains + new domains in O(N) using Map<string, DomainEntry>
@@ -350,32 +393,38 @@ export default function App() {
         try {
           const res = await fetch('/api/dns-check', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'application/json'
+            },
             body: JSON.stringify({ domains: batch }),
             signal: controller.signal
           });
 
-          if (res.ok) {
-            const data = await res.json();
-            const results = data.results || {};
+          const data = await parseJsonResponse<{ results?: Record<string, any> }>(res, '/api/dns-check');
+          const results = data.results || {};
 
-            // Merge batch results via O(1) Map lookup
-            setDomains(prev => prev.map(d => {
-              const info = results[d.domain];
-              if (!info) return d;
-              return {
-                ...d,
-                dnsStatus: info.status,
-                resolvedIp: info.ip,
-                cnameTarget: info.cnameTarget ?? null,
-                redirectTarget: info.redirectTarget ?? null,
-                redirectChain: info.redirectChain,
-                isRedirectOrAlias: info.isRedirectOrAlias
-              };
-            }));
-          }
+          // Merge batch results via O(1) Map lookup
+          setDomains(prev => prev.map(d => {
+            const info = results[d.domain];
+            if (!info) return d;
+            return {
+              ...d,
+              dnsStatus: info.status,
+              resolvedIp: info.ip,
+              cnameTarget: info.cnameTarget ?? null,
+              redirectTarget: info.redirectTarget ?? null,
+              redirectChain: info.redirectChain,
+              isRedirectOrAlias: info.isRedirectOrAlias
+            };
+          }));
         } catch (err: any) {
           if (err?.name === 'AbortError') break;
+          if (err instanceof HtmlResponseError) {
+            setError(err.message);
+            controller.abort();
+            break;
+          }
           console.warn('Chunk DNS lookup failed:', err);
         } finally {
           processed = Math.min(total, processed + batch.length);
